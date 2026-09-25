@@ -95,6 +95,10 @@ function isBrowser12hCycle(): boolean {
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.addEventListener('languagechange', () => {
     browser12hCycle = undefined
+    // Cached `Intl` formatters are invalidated in intl-cache (its listener is
+    // registered first, at import time). Re-render every mounted element so
+    // the new language takes effect immediately, without waiting for a tick.
+    updateMountedElements()
   })
 }
 
@@ -143,6 +147,39 @@ const dateObserver = new (class {
     this.time += Date.now()
   }
 })()
+
+// Every connected element, so that runtime preference changes (language,
+// time-zone, hour-cycle) can be broadcast to all of them. Those changes do
+// not manifest as attribute changes on the elements themselves, so they
+// cannot rely on `attributeChangedCallback`.
+const mountedElements = new Set<RelativeTimeElement>()
+
+function updateMountedElements(): void {
+  for (const element of mountedElements) element.update()
+}
+
+// `lang`, `time-zone` and `hour-cycle` may be set on any ancestor or on the
+// document element, where changes never reach an element's
+// `attributeChangedCallback`. Watch the document for those attributes and
+// re-render every mounted element when they change. Mutations targeting the
+// elements themselves are skipped: those already go through
+// `attributeChangedCallback`.
+const observedDocuments = new WeakSet<Document>()
+function observeDocumentPreferences(doc: Document): void {
+  if (!doc.documentElement || observedDocuments.has(doc)) return
+  observedDocuments.add(doc)
+  new MutationObserver(mutations => {
+    for (const mutation of mutations) {
+      if (mutation.target instanceof RelativeTimeElement) continue
+      updateMountedElements()
+      return
+    }
+  }).observe(doc.documentElement, {
+    attributes: true,
+    subtree: true,
+    attributeFilter: ['lang', 'time-zone', 'hour-cycle'],
+  })
+}
 
 export class RelativeTimeElement extends HTMLElement implements Intl.DateTimeFormatOptions {
   static define(tag = 'relative-time', registry = customElements) {
@@ -641,10 +678,13 @@ export class RelativeTimeElement extends HTMLElement implements Intl.DateTimeFor
   }
 
   connectedCallback(): void {
+    mountedElements.add(this)
+    observeDocumentPreferences(this.ownerDocument)
     this.update()
   }
 
   disconnectedCallback(): void {
+    mountedElements.delete(this)
     dateObserver.unobserve(this)
   }
 
@@ -652,9 +692,11 @@ export class RelativeTimeElement extends HTMLElement implements Intl.DateTimeFor
   attributeChangedCallback(attrName: string, oldValue: unknown, newValue: unknown): void {
     if (oldValue === newValue) return
     if (attrName === 'title') {
-      this.#customTitle =
-        newValue !== null &&
-        (this.date && this.#getFormattedTitle(this.date, this.#lang, this.timeZone, this.hourCycle)) !== newValue
+      const date = this.date
+      const generatedTitle = date
+        ? this.#getFormattedTitle(date, this.#lang, this.timeZone, this.hourCycle)
+        : this.getAttribute('datetime')
+      this.#customTitle = newValue !== null && generatedTitle !== newValue
     }
     if (!this.#updating && !(attrName === 'title' && this.#customTitle)) {
       this.#updating = (async () => {
@@ -671,7 +713,15 @@ export class RelativeTimeElement extends HTMLElement implements Intl.DateTimeFor
     let newTitle: string = oldTitle
     const date = this.date
     if (typeof Intl === 'undefined' || !Intl.DateTimeFormat || !date) {
-      this.#renderRoot.textContent = oldText
+      // A missing or unparseable `datetime` must never surface "Invalid Date".
+      // Fall back to the light-DOM text, then to the raw attribute value, and
+      // keep the raw value on `title` so the broken input stays debuggable.
+      const rawDateTime = this.getAttribute('datetime') || ''
+      this.#renderRoot.textContent = oldText || rawDateTime
+      if (rawDateTime && !this.#customTitle && !this.noTitle && this.getAttribute('title') !== rawDateTime) {
+        this.setAttribute('title', rawDateTime)
+      }
+      dateObserver.unobserve(this)
       return
     }
     const now = Date.now()

@@ -68,11 +68,15 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
 }
 
 function cacheKey(locale: string, options?: object): string {
-  // Options in this codebase are built as object literals with a stable key
-  // order, so `JSON.stringify` produces a stable key. `undefined` values (e.g.
-  // an absent `timeZone`) are dropped by `JSON.stringify`, which matches the
+  // Every formatter is keyed by the triple of locale, time-zone and options,
+  // so results for different combinations are never mixed. The time-zone is
+  // pulled out explicitly rather than relying on it appearing inside the
+  // serialized options. Options in this codebase are built as object literals
+  // with a stable key order, so `JSON.stringify` produces a stable key.
+  // `undefined` values are dropped by `JSON.stringify`, which matches the
   // behaviour of passing them explicitly.
-  return `${locale}\u0000${options ? JSON.stringify(options) : ''}`
+  const timeZone = (options as Intl.DateTimeFormatOptions | undefined)?.timeZone || ''
+  return `${locale}\u0000${timeZone}\u0000${options ? JSON.stringify(options) : ''}`
 }
 
 const dateTimeFormats = createCache<Intl.DateTimeFormat>()
