@@ -67,12 +67,16 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   window.addEventListener('languagechange', clearIntlCache)
 }
 
-function cacheKey(locale: string, options?: object): string {
+// Cache keys combine all three inputs that determine a formatter's output:
+// locale, time zone, and the remaining options. The time zone is segmented
+// explicitly (rather than only appearing inside the serialized options) so a
+// formatter cached for one zone can never leak into another zone's results.
+export function cacheKey(locale: string, options?: {timeZone?: string}): string {
   // Options in this codebase are built as object literals with a stable key
   // order, so `JSON.stringify` produces a stable key. `undefined` values (e.g.
   // an absent `timeZone`) are dropped by `JSON.stringify`, which matches the
   // behaviour of passing them explicitly.
-  return `${locale}\u0000${options ? JSON.stringify(options) : ''}`
+  return `${locale}\u0000${options?.timeZone || ''}\u0000${options ? JSON.stringify(options) : ''}`
 }
 
 const dateTimeFormats = createCache<Intl.DateTimeFormat>()

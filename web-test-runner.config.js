@@ -4,7 +4,7 @@ const browser = product =>
   playwrightLauncher({
     product,
     createBrowserContext({browser: context}) {
-      return context.newContext({timezoneId: 'Asia/Dubai'})
+      return context.newContext({timezoneId: 'Asia/Dubai', locale: 'en-US'})
     },
   })
 

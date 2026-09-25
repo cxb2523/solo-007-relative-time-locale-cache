@@ -1,6 +1,6 @@
 import DurationFormat from './duration-format-ponyfill.js'
 import type {DurationFormatOptions} from './duration-format-ponyfill.js'
-import {createCache} from './intl-cache.js'
+import {createCache, cacheKey} from './intl-cache.js'
 const durationRe = /^[-+]?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/
 
 // `DurationFormat` normalizes its options on construction, so reuse one instance
@@ -33,11 +33,11 @@ const durationFormatOptionFields = [
 ] as const
 
 function durationFormatKey(locale: string, opts: DurationFormatOptions): string {
-  let key = locale
+  const recognized: Record<string, string | undefined> = {}
   for (const field of durationFormatOptionFields) {
-    key += `\u0000${opts[field] ?? ''}`
+    recognized[field] = opts[field]
   }
-  return key
+  return cacheKey(locale, recognized)
 }
 export const unitNames = ['year', 'month', 'week', 'day', 'hour', 'minute', 'second', 'millisecond'] as const
 export type Unit = typeof unitNames[number]

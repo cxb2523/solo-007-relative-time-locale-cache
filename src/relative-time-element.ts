@@ -95,6 +95,44 @@ function isBrowser12hCycle(): boolean {
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.addEventListener('languagechange', () => {
     browser12hCycle = undefined
+    // Host locale preferences changed at runtime: re-render every mounted
+    // element so text built from cached formatters (invalidated in
+    // intl-cache) is recomputed immediately instead of on the next tick.
+    updateConnectedElements()
+  })
+}
+
+// Every element currently connected to a document. Locale/time-zone changes
+// that happen outside an element (document attributes, `languagechange`)
+// must re-render all of them, not just the ones scheduled for a tick.
+const connectedElements = new Set<RelativeTimeElement>()
+
+function updateConnectedElements(): void {
+  for (const element of connectedElements) element.update()
+}
+
+// `lang`/`time-zone`/`hour-cycle` are read from ancestors via `closest()`, so
+// attribute changes on an ancestor (or the document element) must also
+// trigger a re-render. Those do not fire `attributeChangedCallback` on the
+// element itself, so watch the document and re-render on relevant mutations.
+let environmentObserver: MutationObserver | undefined
+
+function observeEnvironmentChanges(documentElement: Element): void {
+  if (environmentObserver || typeof MutationObserver !== 'function') return
+  environmentObserver = new MutationObserver(mutations => {
+    for (const mutation of mutations) {
+      // Elements already re-render via attributeChangedCallback when their
+      // own attributes change; only ancestor/document changes matter here.
+      if (!(mutation.target instanceof RelativeTimeElement)) {
+        updateConnectedElements()
+        return
+      }
+    }
+  })
+  environmentObserver.observe(documentElement, {
+    attributes: true,
+    subtree: true,
+    attributeFilter: ['lang', 'time-zone', 'hour-cycle'],
   })
 }
 
@@ -641,10 +679,13 @@ export class RelativeTimeElement extends HTMLElement implements Intl.DateTimeFor
   }
 
   connectedCallback(): void {
+    connectedElements.add(this)
+    if (this.ownerDocument.documentElement) observeEnvironmentChanges(this.ownerDocument.documentElement)
     this.update()
   }
 
   disconnectedCallback(): void {
+    connectedElements.delete(this)
     dateObserver.unobserve(this)
   }
 
@@ -652,9 +693,11 @@ export class RelativeTimeElement extends HTMLElement implements Intl.DateTimeFor
   attributeChangedCallback(attrName: string, oldValue: unknown, newValue: unknown): void {
     if (oldValue === newValue) return
     if (attrName === 'title') {
-      this.#customTitle =
-        newValue !== null &&
-        (this.date && this.#getFormattedTitle(this.date, this.#lang, this.timeZone, this.hourCycle)) !== newValue
+      const date = this.date
+      const generatedTitle = date
+        ? this.#getFormattedTitle(date, this.#lang, this.timeZone, this.hourCycle)
+        : this.datetime || null
+      this.#customTitle = newValue !== null && generatedTitle !== newValue
     }
     if (!this.#updating && !(attrName === 'title' && this.#customTitle)) {
       this.#updating = (async () => {
@@ -671,7 +714,21 @@ export class RelativeTimeElement extends HTMLElement implements Intl.DateTimeFor
     let newTitle: string = oldTitle
     const date = this.date
     if (typeof Intl === 'undefined' || !Intl.DateTimeFormat || !date) {
-      this.#renderRoot.textContent = oldText
+      // Missing or unparseable `datetime` (e.g. the literal string
+      // "Invalid Date"): never render "Invalid Date". Keep existing shadow
+      // content, falling back to any light-DOM text, and leave the raw
+      // attribute value on `title` to aid debugging.
+      const newText = oldText
+      if (this.#renderRoot.textContent !== newText) this.#renderRoot.textContent = newText
+      const rawDateTime = this.datetime
+      if (rawDateTime && !this.#customTitle && !this.noTitle) {
+        newTitle = rawDateTime
+        if (this.getAttribute('title') !== rawDateTime) this.setAttribute('title', rawDateTime)
+      }
+      if (newText !== oldText || newTitle !== oldTitle) {
+        this.dispatchEvent(new RelativeTimeUpdatedEvent(oldText, newText, oldTitle, newTitle))
+      }
+      dateObserver.unobserve(this)
       return
     }
     const now = Date.now()
